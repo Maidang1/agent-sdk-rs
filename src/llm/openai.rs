@@ -11,6 +11,16 @@ pub struct OpenAIClient {
     base_url: String,
 }
 
+impl Clone for OpenAIClient {
+    fn clone(&self) -> Self {
+        Self {
+            client: Client::new(),
+            api_key: self.api_key.clone(),
+            base_url: self.base_url.clone(),
+        }
+    }
+}
+
 impl OpenAIClient {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
