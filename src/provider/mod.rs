@@ -120,8 +120,8 @@ pub trait LlmProvider: Send + Sync {
     /// 流式生成（可选实现）
     fn generate_stream(
         &self,
-        messages: Vec<Message>,
-        options: Option<GenerateOptions>,
+        _messages: Vec<Message>,
+        _options: Option<GenerateOptions>,
     ) -> Pin<Box<dyn Future<Output = Result<StreamResponse>> + Send + '_>> {
         Box::pin(async { Err(ProviderError::Other("Streaming not supported".into())) })
     }
