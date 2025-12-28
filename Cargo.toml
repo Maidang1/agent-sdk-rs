@@ -29,6 +29,18 @@ path = "examples/validation_test.rs"
 name = "direct_validation"
 path = "examples/direct_validation.rs"
 
+[[example]]
+name = "event_monitoring"
+path = "examples/event_monitoring.rs"
+
+[[example]]
+name = "hook_system"
+path = "examples/hook_system.rs"
+
+[[example]]
+name = "simple_events"
+path = "examples/simple_events.rs"
+
 [dependencies]
 reqwest = { version = "0.12.28", features = ["json", "stream"] }
 serde_json = "1.0"

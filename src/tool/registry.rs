@@ -61,5 +61,3 @@ impl Clone for ToolRegistry {
         }
     }
 }
-
-// cr_391581cfa1d8af550588b6e08a56e27ba9fd9bb819b9b6c8cc9efcb2d3413f64
