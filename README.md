@@ -1,20 +1,19 @@
 # Agent SDK
 
-A Rust SDK for building event-driven AI agents. Inspired by [kode-agent-sdk](https://github.com/shareAI-lab/kode-agent-sdk).
+A Rust SDK for building AI agents with tool calling capabilities.
 
 ## Features
 
-- **Event-Driven Architecture**: Three-channel event system (Progress, Control, Monitor)
-- **Multi-Agent Collaboration**: AgentPool, Room messaging, Safe Fork, Lineage tracking
-- **Tool Approval Workflows**: Configurable policies, allowlist/blocklist, custom handlers
-- **Scheduling & Reminders**: Iteration-based triggers, time-based triggers, custom conditions
-- **Context Management**: Variables, metadata, Todo tracking
-- **LLM Integration**: OpenAI-compatible API, extensible LLMClient trait
+- **LLM Provider Abstraction**: Unified interface for different LLM providers
+- **Tool System**: Extensible tool registration and execution
+- **Agent Runtime**: Core agent with conversation management
+- **Tool Call Parsing**: Support for JSON and XML tool call formats
+- **Async/Await**: Full async support with tokio
 
 ## Quick Start
 
 ```rust
-use agent_sdk::{OpenAIClient, Runtime, RuntimeOptions, Tool, ToolResult};
+use agent_sdk::{Agent, OpenRouterProvider, Tool, ToolResult, AgentOptions, ToolChoice};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -23,199 +22,134 @@ struct CalculatorTool;
 #[async_trait]
 impl Tool for CalculatorTool {
     fn name(&self) -> &str { "calculator" }
-    fn description(&self) -> &str { "Perform arithmetic" }
+    fn description(&self) -> &str { "Perform arithmetic operations" }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "a": { "type": "number" },
-                "b": { "type": "number" },
-                "op": { "type": "string" }
-            }
+                "a": {"type": "number"},
+                "b": {"type": "number"},
+                "operation": {"type": "string", "enum": ["add", "sub", "mul", "div"]}
+            },
+            "required": ["a", "b", "operation"]
         })
     }
-    async fn execute(&self, params: &Value) -> agent_sdk::Result<ToolResult> {
+    
+    async fn execute(&self, params: &Value) -> ToolResult {
         let a = params["a"].as_f64().unwrap_or(0.0);
         let b = params["b"].as_f64().unwrap_or(0.0);
-        let result = match params["op"].as_str().unwrap_or("add") {
+        let op = params["operation"].as_str().unwrap_or("add");
+        
+        let result = match op {
             "add" => a + b,
             "sub" => a - b,
             "mul" => a * b,
-            "div" => a / b,
-            _ => 0.0,
+            "div" => if b != 0.0 { a / b } else { return ToolResult::error("Division by zero") },
+            _ => return ToolResult::error("Unknown operation"),
         };
-        Ok(ToolResult::success(result.to_string()))
+        
+        ToolResult::success(result.to_string())
     }
 }
 
 #[tokio::main]
-async fn main() -> agent_sdk::Result<()> {
-    let llm = OpenAIClient::new(std::env::var("OPENAI_API_KEY")?);
-    let mut runtime = Runtime::new(llm).with_options(RuntimeOptions {
-        model: "gpt-4".to_string(),
-        system_prompt: Some("You are a calculator assistant.".to_string()),
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = OpenRouterProvider::new(
+        std::env::var("OPEN_ROUTER_API_KEY")?,
+        "google/gemini-2.5-flash-lite-preview-09-2025"
+    );
+    
+    let mut agent = Agent::new(provider).with_options(AgentOptions {
+        system_prompt: Some("You are a helpful assistant with access to tools.".into()),
+        tool_choice: ToolChoice::Auto,
         ..Default::default()
     });
-    runtime.register_tool(Box::new(CalculatorTool));
     
-    let response = runtime.run("What is 42 * 17?").await?;
+    agent.register_tool(Box::new(CalculatorTool)).await;
+    
+    let response = agent.run("What is 42 * 17?").await?;
     println!("{}", response);
     Ok(())
 }
-```
-
-## Event-Driven Architecture
-
-Subscribe to agent events for real-time monitoring:
-
-```rust
-use agent_sdk::{EventBus, AgentEvent, ProgressEvent};
-use std::sync::Arc;
-
-let event_bus = Arc::new(EventBus::new(1024));
-let mut receiver = event_bus.subscribe();
-
-tokio::spawn(async move {
-    while let Ok(event) = receiver.recv().await {
-        match event {
-            AgentEvent::Progress(ProgressEvent::ToolCalling { tool_call, .. }) => {
-                println!("Calling: {}", tool_call.name);
-            }
-            AgentEvent::Monitor(monitor) => {
-                println!("Monitor: {:?}", monitor);
-            }
-            _ => {}
-        }
-    }
-});
-
-let runtime = Runtime::new(llm).with_event_bus(event_bus);
-```
-
-## Tool Approval Workflow
-
-Control tool execution with approval policies:
-
-```rust
-use agent_sdk::{ApprovalManager, ApprovalPolicy};
-
-let approval = Arc::new(ApprovalManager::new());
-
-// Auto-approve safe tools
-approval.set_tool_policy("read_file", ApprovalPolicy::AutoApprove).await;
-
-// Block dangerous tools
-approval.set_tool_policy("delete_file", ApprovalPolicy::AutoReject("Blocked".into())).await;
-
-// Require manual approval for others
-approval.set_policy(ApprovalPolicy::RequireApproval).await;
-
-let runtime = Runtime::new(llm)
-    .with_options(RuntimeOptions { require_tool_approval: true, ..Default::default() })
-    .with_approval_manager(approval);
-```
-
-## Multi-Agent Collaboration
-
-Create agent pools and collaboration rooms:
-
-```rust
-use agent_sdk::{AgentPool, Room, EventBus};
-
-let event_bus = Arc::new(EventBus::new(1024));
-let pool: AgentPool<OpenAIClient> = AgentPool::new(event_bus.clone());
-
-// Create agents
-pool.create_agent("researcher", "Researcher", llm1, None).await?;
-pool.create_agent("writer", "Writer", llm2, None).await?;
-
-// Fork an agent (inherits context)
-pool.fork_agent("researcher", "researcher_v2", llm3).await?;
-
-// Create collaboration room
-let room = Room::new("project", "Project Room", event_bus);
-room.join("researcher").await;
-room.join("writer").await;
-room.send("researcher", "Found relevant data").await;
-```
-
-## Scheduling
-
-Set up reminders and triggers:
-
-```rust
-use agent_sdk::{Scheduler, Trigger, ScheduledTask, ScheduledAction};
-use std::time::Duration;
-
-let scheduler = Scheduler::new(event_bus);
-
-// Remind after N iterations
-scheduler.remind_after_iterations("check", 5, "Check progress").await;
-
-// Remind at interval
-scheduler.remind_at_interval("timer", Duration::from_secs(60), "One minute passed").await;
-
-// Custom trigger
-scheduler.add_task(ScheduledTask {
-    id: "auto_pause".into(),
-    trigger: Trigger::AfterIterations(10),
-    action: ScheduledAction::Pause,
-    repeat: false,
-    last_triggered: None,
-}).await;
-```
-
-## Examples
-
-```bash
-# Basic usage
-cargo run --example basic
-
-# Event-driven with EventBus
-cargo run --example event_driven
-
-# Multi-agent collaboration
-cargo run --example multi_agent
-
-# Tool approval workflow
-cargo run --example approval_workflow
-
-# Scheduler and reminders
-cargo run --example scheduler
 ```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        EventBus                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐                   │
-│  │ Progress │  │ Control  │  │ Monitor  │                   │
-│  │ Channel  │  │ Channel  │  │ Channel  │                   │
-│  └──────────┘  └──────────┘  └──────────┘                   │
+│                        Agent                                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
+│  │ Conversation│  │ Tool Registry│  │ Tool Executor│          │
+│  │ Management  │  │             │  │             │          │
+│  └─────────────┘  └─────────────┘  └─────────────┘          │
 └─────────────────────────────────────────────────────────────┘
                             │
-        ┌───────────────────┼───────────────────┐
-        ▼                   ▼                   ▼
-┌───────────────┐   ┌───────────────┐   ┌───────────────┐
-│   AgentPool   │   │   Scheduler   │   │   Approval    │
-│               │   │               │   │   Manager     │
-└───────────────┘   └───────────────┘   └───────────────┘
-        │
-        ▼
-┌───────────────────────────────────────────────────────────┐
-│                        Runtime                             │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐      │
-│  │ Memory  │  │ Context │  │  Tools  │  │  Hooks  │      │
-│  └─────────┘  └─────────┘  └─────────┘  └─────────┘      │
-└───────────────────────────────────────────────────────────┘
-        │
-        ▼
-┌───────────────┐
-│   LLMClient   │
-│   (OpenAI)    │
-└───────────────┘
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    LLM Provider                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
+│  │ OpenRouter  │  │   OpenAI    │  │   Custom    │          │
+│  │ Provider    │  │  Provider   │  │  Provider   │          │
+│  └─────────────┘  └─────────────┘  └─────────────┘          │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+## Examples
+
+```bash
+# Basic calculator tool
+cargo run --example calculator
+
+# Multiple tools working together
+cargo run --example multi_tool
+
+# Test tool call parsing
+cargo run --example test_parser
+```
+
+## Tool Call Format
+
+The agent supports JSON format for tool calls:
+
+```json
+{
+  "tool_calls": [
+    {
+      "id": "call_1",
+      "name": "calculator",
+      "parameters": {
+        "a": 10,
+        "b": 5,
+        "operation": "add"
+      }
+    }
+  ]
+}
+```
+
+## Current Implementation
+
+### Core Components
+- **LlmProvider**: Trait for LLM integration (OpenRouter implemented)
+- **Tool**: Trait for tool implementation with async execution
+- **Agent**: Main runtime with conversation management
+- **ToolRegistry**: Thread-safe tool storage and management
+- **ToolCallParser**: Extracts tool calls from LLM responses
+
+### Supported Features
+- ✅ Basic tool calling with JSON format
+- ✅ Multiple tool registration
+- ✅ Async tool execution
+- ✅ Error handling and recovery
+- ✅ Conversation context management
+- ✅ OpenRouter provider integration
+
+### Planned Features
+- 🔄 Event-driven architecture
+- 🔄 Tool approval workflows
+- 🔄 Multi-agent collaboration
+- 🔄 Scheduling and reminders
+- 🔄 Additional LLM providers
 
 ## License
 
