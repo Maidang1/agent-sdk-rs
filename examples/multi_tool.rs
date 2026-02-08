@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = OpenRouterProvider::new(
         api_key,
         "google/gemini-2.5-flash-lite-preview-09-2025"
-    );
+    )?;
 
     let mut agent = Agent::new(provider).with_options(AgentOptions {
         system_prompt: Some("You are a helpful assistant with access to tools. When asked to perform calculations or text processing, use the appropriate tools. Always respond with JSON format for tool calls.".into()),

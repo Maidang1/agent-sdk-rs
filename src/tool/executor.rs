@@ -1,4 +1,4 @@
-use super::{ToolCall, ToolResult, ToolRegistry};
+use super::{ToolCall, ToolRegistry, ToolResult};
 
 pub struct ToolExecutor {
     registry: ToolRegistry,
@@ -18,6 +18,8 @@ impl ToolExecutor {
     }
 
     pub async fn execute_single(&self, call: &ToolCall) -> ToolResult {
-        self.registry.execute_tool(&call.name, &call.parameters).await
+        self.registry
+            .execute_tool(&call.name, &call.parameters)
+            .await
     }
 }

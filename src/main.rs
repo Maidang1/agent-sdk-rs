@@ -19,11 +19,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let open_router =
-        OpenRouterProvider::new(api_key, "google/gemini-2.5-flash-lite-preview-09-2025");
-    let messages = vec![provider::Message {
-        role: provider::Role::User,
-        content: "写一个 react to-do app".into(),
-    }];
+        OpenRouterProvider::new(api_key, "google/gemini-2.5-flash-lite-preview-09-2025")?;
+    let messages = vec![provider::Message::user("写一个 react to-do app")];
 
     let mut response = open_router.generate_stream(messages, None).await?;
     while let Some(msg) = response.receiver.recv().await {

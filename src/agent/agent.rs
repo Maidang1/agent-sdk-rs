@@ -1,10 +1,10 @@
 use super::options::{AgentOptions, ToolChoice};
 use crate::error::{AgentError, Result};
+use crate::events::{AgentEvent, EventBus};
 use crate::provider::{LlmProvider, Message, StreamResponse};
 use crate::tool::{Tool, ToolCallParser, ToolExecutor, ToolRegistry, ToolResult};
-use crate::events::{EventBus, AgentEvent};
-use tokio::sync::mpsc;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 pub struct Agent<P: LlmProvider> {
     provider: P,
@@ -19,7 +19,7 @@ impl<P: LlmProvider> Agent<P> {
     pub fn new(provider: P) -> Self {
         let tools = ToolRegistry::new();
         let executor = ToolExecutor::new(tools.clone());
-        
+
         Self {
             provider,
             tools,
@@ -51,19 +51,22 @@ impl<P: LlmProvider> Agent<P> {
     }
 
     pub async fn run(&mut self, input: &str) -> Result<String> {
-        self.emit_event(AgentEvent::ConversationStarted { 
-            input: input.to_string() 
+        self.emit_event(AgentEvent::ConversationStarted {
+            input: input.to_string(),
         });
 
         self.conversation.clear();
-        
+
         // 添加系统提示
         if let Some(system_prompt) = &self.options.system_prompt {
             self.conversation.push(Message::system(system_prompt));
         }
-        
+
         // 添加工具描述
-        if matches!(self.options.tool_choice, ToolChoice::Auto | ToolChoice::Required) {
+        if matches!(
+            self.options.tool_choice,
+            ToolChoice::Auto | ToolChoice::Required
+        ) {
             let tools_desc = self.format_tools_description().await;
             if !tools_desc.is_empty() {
                 let tool_prompt = format!(
@@ -73,81 +76,86 @@ impl<P: LlmProvider> Agent<P> {
                 self.conversation.push(Message::system(tool_prompt));
             }
         }
-        
+
         // 添加用户输入
         self.conversation.push(Message::user(input));
-        
+
         // 执行对话循环
         for _ in 0..self.options.max_iterations {
-            self.emit_event(AgentEvent::LlmRequestSent { 
-                messages: self.conversation.clone() 
+            self.emit_event(AgentEvent::LlmRequestSent {
+                messages: self.conversation.clone(),
             });
 
-            let response = match self.provider
-                .generate(self.conversation.clone(), Some(self.options.generate_options.clone()))
-                .await {
+            let response = match self
+                .provider
+                .generate(
+                    self.conversation.clone(),
+                    Some(self.options.generate_options.clone()),
+                )
+                .await
+            {
                 Ok(resp) => resp,
                 Err(e) => {
                     let error_msg = format!("LLM request failed: {}", e);
-                    self.emit_event(AgentEvent::ConversationFailed { 
-                        error: error_msg.clone() 
+                    self.emit_event(AgentEvent::ConversationFailed {
+                        error: error_msg.clone(),
                     });
                     return Err(e.into());
                 }
             };
-            
-            self.emit_event(AgentEvent::LlmResponseReceived { 
+
+            self.emit_event(AgentEvent::LlmResponseReceived {
                 content: response.content.clone(),
                 model: response.model.clone(),
             });
 
-            self.conversation.push(Message::assistant(&response.content));
-            
+            self.conversation
+                .push(Message::assistant(&response.content));
+
             // 检查是否有工具调用
             let tool_calls = ToolCallParser::extract_from_content(&response.content);
-            
+
             if tool_calls.is_empty() {
-                self.emit_event(AgentEvent::ConversationCompleted { 
-                    response: response.content.clone() 
+                self.emit_event(AgentEvent::ConversationCompleted {
+                    response: response.content.clone(),
                 });
                 return Ok(response.content);
             }
-            
-            self.emit_event(AgentEvent::ToolCallsDetected { 
-                calls: tool_calls.clone() 
+
+            self.emit_event(AgentEvent::ToolCallsDetected {
+                calls: tool_calls.clone(),
             });
 
             // 执行工具调用
             let mut results = Vec::new();
             for call in tool_calls {
-                self.emit_event(AgentEvent::ToolCallStarted { 
-                    call: call.clone() 
-                });
+                self.emit_event(AgentEvent::ToolCallStarted { call: call.clone() });
 
                 let result = self.executor.execute_single(&call).await;
-                
+
                 if result.success {
-                    self.emit_event(AgentEvent::ToolCallCompleted { 
+                    self.emit_event(AgentEvent::ToolCallCompleted {
                         call: call.clone(),
                         result: result.clone(),
                     });
                 } else {
-                    self.emit_event(AgentEvent::ToolCallFailed { 
+                    self.emit_event(AgentEvent::ToolCallFailed {
                         call: call.clone(),
                         error: result.error.clone().unwrap_or_default(),
                     });
                 }
-                
+
                 results.push(result);
             }
 
             let results_text = self.format_tool_results(&results);
-            self.conversation.push(Message::user(&format!("Tool results:\n{}", results_text)));
+            self.conversation
+                .push(Message::user(&format!("Tool results:\n{}", results_text)));
         }
-        
+
         let error_msg = "Max iterations reached".to_string();
-        self.emit_event(AgentEvent::ConversationFailed { 
-            error: error_msg.clone() 
+        self.emit_event(AgentEvent::ConversationFailed {
+            error: error_msg.clone(),
         });
         Err(AgentError::ParseError(error_msg))
     }
@@ -155,12 +163,12 @@ impl<P: LlmProvider> Agent<P> {
     pub async fn run_stream(&mut self, input: &str) -> Result<StreamResponse> {
         // 简化版流式实现
         let result = self.run(input).await?;
-        
+
         let (tx, rx) = mpsc::channel(1);
         tokio::spawn(async move {
             let _ = tx.send(Ok(result)).await;
         });
-        
+
         Ok(StreamResponse { receiver: rx })
     }
 
@@ -181,7 +189,14 @@ impl<P: LlmProvider> Agent<P> {
                 if result.success {
                     format!("Result {}: {}", i + 1, result.content)
                 } else {
-                    format!("Error {}: {}", i + 1, result.error.as_ref().unwrap_or(&"Unknown error".to_string()))
+                    format!(
+                        "Error {}: {}",
+                        i + 1,
+                        result
+                            .error
+                            .as_ref()
+                            .unwrap_or(&"Unknown error".to_string())
+                    )
                 }
             })
             .collect::<Vec<_>>()

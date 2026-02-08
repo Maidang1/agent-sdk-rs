@@ -1,4 +1,4 @@
-use agent_sdk::{Agent, OpenRouterProvider, Tool, ToolResult, AgentOptions, ToolChoice};
+use agent_sdk::{Agent, AgentOptions, OpenRouterProvider, Tool, ToolChoice, ToolResult};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::env;
@@ -22,7 +22,7 @@ impl Tool for CalculatorTool {
                 "a": {"type": "number", "description": "First number"},
                 "b": {"type": "number", "description": "Second number"},
                 "operation": {
-                    "type": "string", 
+                    "type": "string",
                     "enum": ["add", "sub", "mul", "div"],
                     "description": "Operation to perform"
                 }
@@ -60,10 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = env::var("OPEN_ROUTER_API_KEY")
         .expect("Please set the OPEN_ROUTER_API_KEY environment variable");
 
-    let provider = OpenRouterProvider::new(
-        api_key,
-        "google/gemini-2.5-flash-lite-preview-09-2025"
-    );
+    let provider = OpenRouterProvider::new(api_key, "google/gemini-2.5-flash-lite-preview-09-2025")?;
 
     let mut agent = Agent::new(provider).with_options(AgentOptions {
         system_prompt: Some("You are a helpful assistant with access to tools. Always use tools when asked to perform calculations.".into()),

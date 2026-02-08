@@ -9,6 +9,7 @@ dependencies = [
  "async-trait",
  "futures-util",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]

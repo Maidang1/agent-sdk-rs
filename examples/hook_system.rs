@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = OpenRouterProvider::new(
         api_key,
         "google/gemini-2.5-flash-lite-preview-09-2025"
-    );
+    )?;
 
     let mut agent = Agent::new(provider)
         .with_options(AgentOptions {

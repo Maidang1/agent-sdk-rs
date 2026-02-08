@@ -1,5 +1,4 @@
-use agent_sdk::tool::{ToolCallParser, ToolCall};
-use serde_json::json;
+use agent_sdk::tool::ToolCallParser;
 
 fn main() {
     // 测试 JSON 格式解析

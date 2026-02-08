@@ -1,4 +1,4 @@
-use agent_sdk::{Agent, OpenRouterProvider, Tool, ToolResult, AgentOptions, ToolChoice};
+use agent_sdk::{Agent, AgentOptions, OpenRouterProvider, Tool, ToolChoice, ToolResult};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::env;
@@ -22,7 +22,7 @@ impl Tool for CalculatorTool {
                 "a": {"type": "number", "description": "First number"},
                 "b": {"type": "number", "description": "Second number"},
                 "operation": {
-                    "type": "string", 
+                    "type": "string",
                     "enum": ["add", "sub", "mul", "div"],
                     "description": "Operation to perform"
                 }
@@ -33,7 +33,7 @@ impl Tool for CalculatorTool {
 
     async fn execute(&self, params: &Value) -> ToolResult {
         println!("Calculator tool called with params: {}", params);
-        
+
         let a = params["a"].as_f64().unwrap_or(0.0);
         let b = params["b"].as_f64().unwrap_or(0.0);
         let operation = params["operation"].as_str().unwrap_or("add");
@@ -64,10 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = env::var("OPEN_ROUTER_API_KEY")
         .expect("Please set the OPEN_ROUTER_API_KEY environment variable");
 
-    let provider = OpenRouterProvider::new(
-        api_key,
-        "google/gemini-2.5-flash-lite-preview-09-2025"
-    );
+    let provider = OpenRouterProvider::new(api_key, "google/gemini-2.5-flash-lite-preview-09-2025")?;
 
     let mut agent = Agent::new(provider).with_options(AgentOptions {
         system_prompt: Some("You are a helpful assistant. When asked to perform calculations, you MUST use the calculator tool. Respond with JSON format exactly like this example: {\"tool_calls\": [{\"id\": \"call_1\", \"name\": \"calculator\", \"parameters\": {\"a\": 15, \"b\": 23, \"operation\": \"mul\"}}]}".into()),
@@ -81,7 +78,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Agent with calculator tool ready!");
     println!("Testing: Calculate 15 * 23");
 
-    match agent.run("Calculate 15 * 23 using the calculator tool").await {
+    match agent
+        .run("Calculate 15 * 23 using the calculator tool")
+        .await
+    {
         Ok(response) => println!("Final Response: {}", response),
         Err(e) => eprintln!("Error: {}", e),
     }

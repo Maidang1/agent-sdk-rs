@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use crate::events::{AgentEvent, EventBus};
+use std::sync::Arc;
 
 pub type HookFn = Arc<dyn Fn(&AgentEvent) -> bool + Send + Sync>;
 
@@ -16,7 +16,7 @@ impl HookManager {
         }
     }
 
-    pub fn add_hook<F>(&mut self, hook: F) 
+    pub fn add_hook<F>(&mut self, hook: F)
     where
         F: Fn(&AgentEvent) -> bool + Send + Sync + 'static,
     {
@@ -26,7 +26,7 @@ impl HookManager {
     pub async fn start_monitoring(&self) {
         let mut receiver = self.event_bus.subscribe();
         let hooks = self.hooks.clone();
-        
+
         tokio::spawn(async move {
             while let Ok(event) = receiver.recv().await {
                 for hook in &hooks {
@@ -50,7 +50,10 @@ impl HookManager {
                     println!("[LOG] Tool call started: {}", call.name);
                 }
                 AgentEvent::ToolCallCompleted { call, result } => {
-                    println!("[LOG] Tool call completed: {} -> success: {}", call.name, result.success);
+                    println!(
+                        "[LOG] Tool call completed: {} -> success: {}",
+                        call.name, result.success
+                    );
                 }
                 AgentEvent::ConversationCompleted { .. } => {
                     println!("[LOG] Conversation completed successfully");
@@ -68,11 +71,11 @@ impl HookManager {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Mutex;
         use std::time::Instant;
-        
+
         static TOOL_CALLS: AtomicU64 = AtomicU64::new(0);
         static CONVERSATIONS: AtomicU64 = AtomicU64::new(0);
         static START_TIME: Mutex<Option<Instant>> = Mutex::new(None);
-        
+
         Arc::new(|event| {
             match event {
                 AgentEvent::ConversationStarted { .. } => {
@@ -85,10 +88,14 @@ impl HookManager {
                 AgentEvent::ToolCallStarted { .. } => {
                     TOOL_CALLS.fetch_add(1, Ordering::Relaxed);
                 }
-                AgentEvent::ConversationCompleted { .. } | AgentEvent::ConversationFailed { .. } => {
+                AgentEvent::ConversationCompleted { .. }
+                | AgentEvent::ConversationFailed { .. } => {
                     let conversations = CONVERSATIONS.load(Ordering::Relaxed);
                     let tool_calls = TOOL_CALLS.load(Ordering::Relaxed);
-                    println!("[METRICS] Total conversations: {}, Total tool calls: {}", conversations, tool_calls);
+                    println!(
+                        "[METRICS] Total conversations: {}, Total tool calls: {}",
+                        conversations, tool_calls
+                    );
                 }
                 _ => {}
             }

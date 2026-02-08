@@ -20,14 +20,21 @@ impl ToolRegistry {
         tools.insert(name, tool);
     }
 
-    pub async fn execute_tool(&self, name: &str, params: &serde_json::Value) -> crate::tool::ToolResult {
+    pub async fn execute_tool(
+        &self,
+        name: &str,
+        params: &serde_json::Value,
+    ) -> crate::tool::ToolResult {
         let tools = self.tools.read().await;
         if let Some(tool) = tools.get(name) {
             // Validate parameters first
             if let Err(validation_error) = tool.validate_parameters(params) {
-                return crate::tool::ToolResult::error(format!("Parameter validation failed: {}", validation_error));
+                return crate::tool::ToolResult::error(format!(
+                    "Parameter validation failed: {}",
+                    validation_error
+                ));
             }
-            
+
             // Execute tool if validation passes
             tool.execute(params).await
         } else {
