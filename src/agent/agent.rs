@@ -63,10 +63,7 @@ impl<P: LlmProvider> Agent<P> {
         }
 
         // 添加工具描述
-        if matches!(
-            self.options.tool_choice,
-            ToolChoice::Auto | ToolChoice::Required
-        ) {
+        if self.tools_enabled() {
             let tools_desc = self.format_tools_description().await;
             if !tools_desc.is_empty() {
                 let tool_prompt = format!(
@@ -113,9 +110,19 @@ impl<P: LlmProvider> Agent<P> {
                 .push(Message::assistant(&response.content));
 
             // 检查是否有工具调用
-            let tool_calls = ToolCallParser::extract_from_content(&response.content);
+            let tool_calls = self.process_tool_calls(&response.content).await?;
 
             if tool_calls.is_empty() {
+                if matches!(self.options.tool_choice, ToolChoice::Required) {
+                    let error_msg =
+                        "ToolChoice::Required is set but model response contains no tool calls"
+                            .to_string();
+                    self.emit_event(AgentEvent::ConversationFailed {
+                        error: error_msg.clone(),
+                    });
+                    return Err(AgentError::ParseError(error_msg));
+                }
+
                 self.emit_event(AgentEvent::ConversationCompleted {
                     response: response.content.clone(),
                 });
@@ -161,7 +168,28 @@ impl<P: LlmProvider> Agent<P> {
     }
 
     pub async fn run_stream(&mut self, input: &str) -> Result<StreamResponse> {
-        // 简化版流式实现
+        if !self.tools_enabled() {
+            self.conversation.clear();
+            if let Some(system_prompt) = &self.options.system_prompt {
+                self.conversation.push(Message::system(system_prompt));
+            }
+            self.conversation.push(Message::user(input));
+
+            self.emit_event(AgentEvent::LlmRequestSent {
+                messages: self.conversation.clone(),
+            });
+
+            return self
+                .provider
+                .generate_stream(
+                    self.conversation.clone(),
+                    Some(self.options.generate_options.clone()),
+                )
+                .await
+                .map_err(Into::into);
+        }
+
+        // 工具模式仍走 run() 聚合后返回单 chunk
         let result = self.run(input).await?;
 
         let (tx, rx) = mpsc::channel(1);
@@ -174,11 +202,41 @@ impl<P: LlmProvider> Agent<P> {
 
     async fn format_tools_description(&self) -> String {
         let tools = self.tools.list_tools().await;
+        let target_tool = match &self.options.tool_choice {
+            ToolChoice::Specific(name) => Some(name.as_str()),
+            _ => None,
+        };
+
         tools
             .iter()
+            .filter(|tool| target_tool.map(|name| tool.name == name).unwrap_or(true))
             .map(|tool| format!("- {}: {}", tool.name, tool.description))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn tools_enabled(&self) -> bool {
+        !matches!(self.options.tool_choice, ToolChoice::None)
+    }
+
+    async fn process_tool_calls(&self, content: &str) -> Result<Vec<crate::tool::ToolCall>> {
+        if !self.tools_enabled() {
+            return Ok(Vec::new());
+        }
+
+        let mut calls = ToolCallParser::extract_from_content(content);
+        if let ToolChoice::Specific(expected_name) = &self.options.tool_choice {
+            if calls.iter().any(|call| call.name != *expected_name) {
+                return Err(AgentError::ParseError(format!(
+                    "ToolChoice::Specific({}) only allows this tool to be called",
+                    expected_name
+                )));
+            }
+
+            calls.retain(|call| call.name == *expected_name);
+        }
+
+        Ok(calls)
     }
 
     fn format_tool_results(&self, results: &[ToolResult]) -> String {
@@ -201,5 +259,139 @@ impl<P: LlmProvider> Agent<P> {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::{GenerateOptions, GenerateResponse, Usage};
+    use std::future::Future;
+    use std::pin::Pin;
+
+    struct MockProvider {
+        content: String,
+    }
+
+    impl LlmProvider for MockProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn model(&self) -> &str {
+            "mock-model"
+        }
+
+        fn generate(
+            &self,
+            _messages: Vec<Message>,
+            _options: Option<GenerateOptions>,
+        ) -> Pin<Box<dyn Future<Output = crate::provider::Result<GenerateResponse>> + Send + '_>>
+        {
+            Box::pin(async move {
+                Ok(GenerateResponse {
+                    content: self.content.clone(),
+                    usage: Some(Usage::default()),
+                    model: self.model().to_string(),
+                    finish_reason: Some("stop".to_string()),
+                })
+            })
+        }
+
+        fn generate_stream(
+            &self,
+            _messages: Vec<Message>,
+            _options: Option<GenerateOptions>,
+        ) -> Pin<Box<dyn Future<Output = crate::provider::Result<StreamResponse>> + Send + '_>>
+        {
+            Box::pin(async move {
+                let (tx, rx) = mpsc::channel(2);
+                let content = self.content.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(Ok(content)).await;
+                });
+                Ok(StreamResponse { receiver: rx })
+            })
+        }
+
+        fn health_check(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = crate::provider::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_choice_none_ignores_tool_call_payload() {
+        let provider = MockProvider {
+            content: r#"{"tool_calls":[{"name":"calculator","parameters":{"a":1,"b":2}}]}"#
+                .to_string(),
+        };
+
+        let mut agent = Agent::new(provider).with_options(AgentOptions {
+            tool_choice: ToolChoice::None,
+            max_iterations: 1,
+            ..Default::default()
+        });
+
+        let result = agent.run("hi").await.expect("run should succeed");
+        assert!(result.contains("tool_calls"));
+    }
+
+    #[tokio::test]
+    async fn tool_choice_required_returns_error_without_tool_call() {
+        let provider = MockProvider {
+            content: "plain answer without tool call".to_string(),
+        };
+
+        let mut agent = Agent::new(provider).with_options(AgentOptions {
+            tool_choice: ToolChoice::Required,
+            max_iterations: 1,
+            ..Default::default()
+        });
+
+        let err = agent.run("hi").await.expect_err("should fail");
+        assert!(err
+            .to_string()
+            .contains("ToolChoice::Required is set but model response contains no tool calls"));
+    }
+
+    #[tokio::test]
+    async fn tool_choice_specific_rejects_other_tool_names() {
+        let provider = MockProvider {
+            content: r#"{"tool_calls":[{"name":"other_tool","parameters":{}}]}"#.to_string(),
+        };
+
+        let mut agent = Agent::new(provider).with_options(AgentOptions {
+            tool_choice: ToolChoice::Specific("calculator".to_string()),
+            max_iterations: 1,
+            ..Default::default()
+        });
+
+        let err = agent.run("hi").await.expect_err("should fail");
+        assert!(err
+            .to_string()
+            .contains("ToolChoice::Specific(calculator) only allows this tool to be called"));
+    }
+
+    #[tokio::test]
+    async fn run_stream_uses_provider_stream_when_tools_disabled() {
+        let provider = MockProvider {
+            content: "streamed content".to_string(),
+        };
+
+        let mut agent = Agent::new(provider).with_options(AgentOptions {
+            tool_choice: ToolChoice::None,
+            ..Default::default()
+        });
+
+        let mut stream = agent.run_stream("hi").await.expect("stream should start");
+        let chunk = stream
+            .receiver
+            .recv()
+            .await
+            .expect("should receive chunk")
+            .expect("chunk should be ok");
+        assert_eq!(chunk, "streamed content");
     }
 }
